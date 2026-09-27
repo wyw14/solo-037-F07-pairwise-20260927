@@ -14,12 +14,54 @@ type AuditCheck struct {
     Detail string `json:"detail"`
 }
 
+const (
+    PersistenceVerified = "verified"
+    PersistenceUnverified = "unverified"
+)
+
+// PersistenceRow reports one category of run records: how many were expected,
+// how many are verified in the journal file, and how many exist only in
+// memory or nowhere at all.
+type PersistenceRow struct {
+    Category string `json:"category"`
+    Expected int `json:"expected"`
+    Persisted int `json:"persisted"`
+    MemoryOnly int `json:"memory_only"`
+    Missing int `json:"missing"`
+    Source string `json:"source"`
+    Detail string `json:"detail"`
+}
+
+// PersistenceAudit lists, for one run, which expected records are verified in
+// the journal file and which are only held in memory. Status is "unverified"
+// whenever the journal file cannot be read or disagrees with memory, so
+// in-memory state is never presented as persistent evidence.
+type PersistenceAudit struct {
+    Run model.RunID `json:"run"`
+    Status string `json:"status"`
+    Journal string `json:"journal"`
+    Issue string `json:"issue,omitempty"`
+    Rows []PersistenceRow `json:"rows"`
+}
+
+func (p PersistenceAudit) Verified() bool { return p.Status == PersistenceVerified }
+
+func (p PersistenceAudit) Row(category string) PersistenceRow {
+    for _, row := range p.Rows {
+        if row.Category == category {
+            return row
+        }
+    }
+    return PersistenceRow{Category: category}
+}
+
 type AuditReport struct {
     Run model.RunID `json:"run"`
     Fence uint64 `json:"fence"`
     CheckedAt time.Time `json:"checked_at"`
     Passed bool `json:"passed"`
     Checks []AuditCheck `json:"checks"`
+    Persistence PersistenceAudit `json:"persistence"`
 }
 
 func AuditLaboratory(laboratory *Laboratory, run model.RunID, fence uint64, at time.Time) AuditReport {
@@ -34,10 +76,23 @@ func AuditLaboratory(laboratory *Laboratory, run model.RunID, fence uint64, at t
     samples := laboratory.Probes.Samples(run)
     report.Add("wave_samples_present", len(samples) > 0, countDetail(len(samples)))
     report.Add("wave_revision_current", sameRevision(samples), revisionDetail(samples))
-    report.Add("wave_evidence_durable", durableEvidence(samples), durableDetail(samples))
     forces := laboratory.Forces.Values(run)
     report.Add("force_samples_present", len(forces) > 0, countDetail(len(forces)))
-    report.Add("force_evidence_durable", durableEvidence(forces), durableDetail(forces))
+    persistence := AuditPersistence(laboratory, run)
+    report.Persistence = persistence
+    consistencyDetail := persistence.Journal
+    if persistence.Issue != "" {
+        consistencyDetail = persistence.Issue
+    }
+    report.Add("journal_file_consistent", persistence.Verified(), consistencyDetail)
+    waveRow := persistence.Row("wave")
+    report.Add("wave_evidence_durable", persistence.Verified() && waveRow.Expected > 0 && waveRow.Persisted >= waveRow.Expected, waveRow.Detail)
+    forceRow := persistence.Row("force")
+    report.Add("force_evidence_durable", persistence.Verified() && forceRow.Expected > 0 && forceRow.Persisted >= forceRow.Expected, forceRow.Detail)
+    brakeRow := persistence.Row("brake")
+    report.Add("brake_record_persisted", brakeRow.Expected == 0 || (persistence.Verified() && brakeRow.Persisted >= brakeRow.Expected), brakeRow.Detail)
+    stageRow := persistence.Row("stage")
+    report.Add("stage_record_persisted", stageRow.Expected == 0 || (persistence.Verified() && stageRow.Persisted >= stageRow.Expected), stageRow.Detail)
     records := journal.RecordsForRun(laboratory.Store.Records(), run)
     report.Add("journal_records_present", len(records) > 0, countDetail(len(records)))
     recovery := journal.Recover(records, run)
@@ -48,6 +103,103 @@ func AuditLaboratory(laboratory *Laboratory, run model.RunID, fence uint64, at t
     report.Add("interlocks_ready", laboratory.Interlocks.Ready(), boolDetail(laboratory.Interlocks.Ready()))
     report.Sort()
     return report
+}
+
+// AuditPersistence reconciles one run's expected records against the journal
+// file on disk. Expected counts come from live run state (probe and force
+// collections, emergency result); persisted counts come only from re-reading
+// the journal file, never from the store's in-memory copy.
+func AuditPersistence(laboratory *Laboratory, run model.RunID) PersistenceAudit {
+    audit := PersistenceAudit{Run: run, Status: PersistenceVerified, Journal: laboratory.Store.Path()}
+    diskRecords, diskErr := laboratory.Store.PersistedRecords()
+    diskReadable := diskErr == nil
+    if !diskReadable {
+        audit.Status = PersistenceUnverified
+        audit.Issue = "journal unreadable: " + diskErr.Error()
+    }
+    diskRun := journal.RecordsForRun(diskRecords, run)
+    memoryRun := journal.RecordsForRun(laboratory.Store.Records(), run)
+    if diskReadable && !sameRecordSet(diskRun, memoryRun) {
+        audit.Status = PersistenceUnverified
+        audit.Issue = "journal differs from memory: disk=" + countDetail(len(diskRun)) + " memory=" + countDetail(len(memoryRun))
+    }
+    diskCounts := journal.CountKinds(diskRun)
+    waveExpected := len(laboratory.Probes.Samples(run))
+    forceExpected := len(laboratory.Forces.Values(run))
+    brakeExpected := 0
+    if _, found := laboratory.Emergency.Result(run); found {
+        brakeExpected = 1
+    }
+    stageExpected := 0
+    if waveExpected+forceExpected+brakeExpected > 0 {
+        stageExpected = 1
+    }
+    audit.Rows = []PersistenceRow{
+        persistenceRow("wave", waveExpected, waveExpected, diskCounts["wave_trace"], diskReadable, audit.Verified()),
+        persistenceRow("force", forceExpected, forceExpected, diskCounts["force_trace"], diskReadable, audit.Verified()),
+        persistenceRow("brake", brakeExpected, brakeExpected, diskCounts["brake"], diskReadable, audit.Verified()),
+        persistenceRow("stage", stageExpected, 0, diskCounts["stage"], diskReadable, audit.Verified()),
+    }
+    return audit
+}
+
+func persistenceRow(category string, expected int, memoryHeld int, persisted int, diskReadable bool, verified bool) PersistenceRow {
+    memoryOnly := memoryHeld
+    if diskReadable {
+        memoryOnly = memoryHeld - persisted
+        if memoryOnly < 0 {
+            memoryOnly = 0
+        }
+    }
+    missing := expected - persisted - memoryOnly
+    if missing < 0 {
+        missing = 0
+    }
+    row := PersistenceRow{
+        Category: category,
+        Expected: expected,
+        Persisted: persisted,
+        MemoryOnly: memoryOnly,
+        Missing: missing,
+        Detail: countDetail(persisted) + "/" + countDetail(expected) + " on disk",
+    }
+    row.Source = persistenceSource(row, verified)
+    return row
+}
+
+func persistenceSource(row PersistenceRow, verified bool) string {
+    if !verified {
+        return PersistenceUnverified
+    }
+    switch {
+    case row.Expected == 0 && row.Persisted == 0:
+        return "none"
+    case row.Persisted > 0 && row.MemoryOnly > 0:
+        return "journal_file+memory"
+    case row.Persisted > 0:
+        return "journal_file"
+    case row.MemoryOnly > 0:
+        return "memory_only"
+    default:
+        return "missing"
+    }
+}
+
+func sameRecordSet(disk []journal.Record, memory []journal.Record) bool {
+    if len(disk) != len(memory) {
+        return false
+    }
+    counts := make(map[model.EventID]int, len(disk))
+    for _, record := range disk {
+        counts[record.ID]++
+    }
+    for _, record := range memory {
+        counts[record.ID]--
+        if counts[record.ID] < 0 {
+            return false
+        }
+    }
+    return true
 }
 
 func (r *AuditReport) Add(name string, passed bool, detail string) {
@@ -92,18 +244,6 @@ func sameRevision(evidence []model.Evidence) bool {
     return true
 }
 
-func durableEvidence(evidence []model.Evidence) bool {
-    if len(evidence) == 0 {
-        return false
-    }
-    for _, item := range evidence {
-        if !item.Durable {
-            return false
-        }
-    }
-    return true
-}
-
 func revisionDetail(evidence []model.Evidence) string {
     if len(evidence) == 0 {
         return "none"
@@ -113,16 +253,6 @@ func revisionDetail(evidence []model.Evidence) string {
         revisions[item.Revision] = struct{}{}
     }
     return countDetail(len(revisions))
-}
-
-func durableDetail(evidence []model.Evidence) string {
-    count := 0
-    for _, item := range evidence {
-        if item.Durable {
-            count++
-        }
-    }
-    return countDetail(count) + "/" + countDetail(len(evidence))
 }
 
 func countDetail(value int) string {

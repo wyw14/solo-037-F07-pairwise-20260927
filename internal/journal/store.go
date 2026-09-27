@@ -43,23 +43,46 @@ func (s *Store) path() string {
 }
 
 func (s *Store) load() error {
-    file, err := os.Open(s.path())
-    if errors.Is(err, os.ErrNotExist) {
-        return nil
-    }
+    records, err := s.readFile()
     if err != nil {
         return err
     }
+    s.records = records
+    return nil
+}
+
+func (s *Store) readFile() ([]Record, error) {
+    file, err := os.Open(s.path())
+    if errors.Is(err, os.ErrNotExist) {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, err
+    }
     defer file.Close()
+    var records []Record
     scanner := bufio.NewScanner(file)
     for scanner.Scan() {
         var record Record
         if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
-            return err
+            return nil, err
         }
-        s.records = append(s.records, record)
+        records = append(records, record)
     }
-    return scanner.Err()
+    return records, scanner.Err()
+}
+
+// Path names the journal file, so audit output can cite the on-disk source.
+func (s *Store) Path() string {
+    return s.path()
+}
+
+// PersistedRecords re-reads the journal file from disk instead of serving the
+// in-memory copy, so audits verify what actually landed on disk.
+func (s *Store) PersistedRecords() ([]Record, error) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    return s.readFile()
 }
 
 func (s *Store) FailNext(kind string) {
