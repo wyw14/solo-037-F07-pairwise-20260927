@@ -156,5 +156,14 @@ func ExerciseReachability(l *Laboratory, at time.Time) map[string]any {
 
     runtimeRecovery := Recovery{Journal: l.Store, Track: trackState, Carriage: gate}
     result["recovery_steps"] = runtimeRecovery.Steps(identities.Run)
+
+    // The reachability self-check writes journal records under two
+    // identities: trackRecovery/force.Persist use identities.Run (fence and
+    // a force frame), while the test coordinator journals arming/measuring
+    // stages under its own reachability operation. Register both so the
+    // evidence view audits the diagnostic writes instead of orphaning them.
+    l.Plans.Register(identities.Run, identities.Revision, nil)
+    l.Plans.ExpectForces(identities.Run, []model.Evidence{{ID: latestForce.ID, Run: identities.Run, Revision: identities.Revision, SourceID: latestForce.SourceID, Kind: latestForce.Kind, Value: latestForce.Value, RecordedAt: latestForce.RecordedAt, Durable: true}})
+    l.Plans.Register(operation.ID, operation.Revision, []model.RunStage{model.StageArming, model.StageMeasuring})
     return result
 }

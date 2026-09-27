@@ -62,6 +62,34 @@ func (s *Store) load() error {
     return scanner.Err()
 }
 
+// ReadFile reads records directly from the journal file on disk, bypassing
+// in-memory state. A missing file returns os.ErrNotExist so callers can
+// distinguish "nothing ever landed" from an empty read.
+func ReadFile(directory string) ([]Record, error) {
+    path := filepath.Join(directory, "events.jsonl")
+    file, err := os.Open(path)
+    if err != nil {
+        return nil, err
+    }
+    defer file.Close()
+    records := make([]Record, 0)
+    scanner := bufio.NewScanner(file)
+    for scanner.Scan() {
+        var record Record
+        if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+            return nil, err
+        }
+        records = append(records, record)
+    }
+    if err := scanner.Err(); err != nil {
+        return nil, err
+    }
+    return records, nil
+}
+
+// FilePath is the expected location of the durable journal.
+func FilePath(directory string) string { return filepath.Join(directory, "events.jsonl") }
+
 func (s *Store) FailNext(kind string) {
     s.mu.Lock()
     defer s.mu.Unlock()
@@ -115,3 +143,6 @@ func (s *Store) Records() []Record {
     copy(result, s.records)
     return result
 }
+
+// Dir is the directory that holds the durable events.jsonl journal.
+func (s *Store) Dir() string { return s.directory }

@@ -168,6 +168,25 @@ func (a *MeasurementArchive) List() []MeasuredRun {
 	return result
 }
 
+// Path is the location of the durable measurement archive ("" when the
+// archive is memory-only).
+func (a *MeasurementArchive) Path() string { return a.path }
+
+// ReadFile loads runs straight from the archive file, bypassing in-memory
+// state, so audits can verify what actually landed. A missing file returns
+// os.ErrNotExist.
+func (a *MeasurementArchive) ReadFile() (map[model.RunID]MeasuredRun, error) {
+	data, err := os.ReadFile(a.path)
+	if err != nil {
+		return nil, err
+	}
+	runs := make(map[model.RunID]MeasuredRun)
+	if err := json.Unmarshal(data, &runs); err != nil {
+		return nil, fmt.Errorf("read measurement archive: %w", err)
+	}
+	return runs, nil
+}
+
 func (a *MeasurementArchive) Analyze(id model.RunID) (MeasurementAnalysis, error) {
 	run, exists := a.Get(id)
 	if !exists {

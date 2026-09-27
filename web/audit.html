@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>WaveLab Evidence Audit</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 1.5rem; color: #1a1a1a; }
+h1 { margin-bottom: .25rem; }
+.sub { color: #555; margin-top: 0; }
+table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+th, td { border: 1px solid #ccc; padding: .35rem .55rem; text-align: left; vertical-align: top; font-size: .9rem; }
+th { background: #f0f0f0; }
+.status { font-weight: bold; }
+.verified { color: #1a7f37; }
+.missing { color: #b35900; }
+.unverified { color: #c62828; }
+.gaps { color: #c62828; }
+details summary { cursor: pointer; font-weight: bold; }
+code { font-size: .85rem; }
+.sources { color: #444; }
+</style>
+</head>
+<body>
+<main>
+<h1>Evidence Audit</h1>
+<p class="sub">Per run: expected wave / force / brake / stage records and where they actually landed. Only files on disk count as evidence; memory-only frames are reported unverified.</p>
+<div id="data">loading…</div>
+</main>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function rows(runs) {
+  if (!runs || !runs.length) return '<p><em>none</em></p>';
+  let html = '<table><tr><th>Run</th><th>Name</th><th>Origin</th><th>File</th><th>Categories</th><th>Gaps</th><th>Status</th></tr>';
+  for (const r of runs) {
+    const cats = (r.categories || []).map(c => {
+      const src = (c.sources || []).map(s => esc(s.source_id) + ' (' + esc(s.id) + ')').join(', ');
+      return `<details><summary><span class="status ${esc(c.status)}">${esc(c.category)}: ${esc(c.status)}</span> `
+        + `<code>${esc(c.on_disk)}/${esc(c.expected)} on disk${c.in_memory ? ', '+esc(c.in_memory)+' in memory' : ''}</code></summary>`
+        + `<div class="sources">${src ? 'sources: ' + src : 'no durable frames'}</div>`
+        + `<div>${esc(c.detail || '')}</div></details>`;
+    }).join('');
+    html += `<tr><td><code>${esc(r.run)}</code></td><td>${esc(r.name || '')}</td><td>${esc(r.origin)}</td>`
+      + `<td><code>${esc(r.path || 'memory-only')}</code>${r.file_error ? '<div class="gaps">'+esc(r.file_error)+'</div>' : ''}</td>`
+      + `<td>${cats}</td><td class="gaps">${(r.gaps||[]).map(esc).join('<br>') || ''}</td>`
+      + `<td><span class="status ${esc(r.status)}">${esc(r.status)}</span></td></tr>`;
+  }
+  return html + '</table>';
+}
+fetch('/api/audit').then(r => r.json()).then(v => {
+  const d = v.data || {};
+  const sum = o => Object.entries(o || {}).map(([k,n]) => esc(k)+'='+n).join(', ');
+  data.innerHTML =
+    '<p>checked at ' + esc(d.checked_at) + '</p>'
+    + '<h2>Journal runs (diagnostic scenario)</h2>'
+    + '<p class="sub">' + esc(d.journal && d.journal.journal_path || '') + ' — ' + sum(d.journal && d.journal.summary) + '</p>'
+    + rows(d.journal && d.journal.runs)
+    + '<h3>Journal runs without registered expectations</h3>'
+    + rows(d.journal && d.journal.unplanned_runs)
+    + '<h2>Operator measurement archive</h2>'
+    + '<p class="sub">' + esc(d.operator_archive && d.operator_archive.archive_path || 'memory-only') + ' — ' + sum(d.operator_archive && d.operator_archive.summary) + '</p>'
+    + rows(d.operator_archive && d.operator_archive.runs)
+    + '<h3>Archive runs unknown to the running service</h3>'
+    + rows(d.operator_archive && d.operator_archive.unplanned_runs);
+}).catch(err => { data.textContent = 'failed to load audit: ' + err; });
+</script>
+</body>
+</html>

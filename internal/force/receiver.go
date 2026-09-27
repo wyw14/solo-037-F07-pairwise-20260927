@@ -22,6 +22,14 @@ func (r *Receiver) Record(run model.RunID, revision model.RevisionID, value floa
     return evidence
 }
 
+// Keep stores an evidence frame that was already committed elsewhere (for
+// example a journal batch), instead of minting a new in-memory frame.
+func (r *Receiver) Keep(evidence model.Evidence) {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    r.values[evidence.Run] = append(r.values[evidence.Run], evidence)
+}
+
 func (r *Receiver) Durable(run model.RunID) bool {
     r.mu.Lock()
     defer r.mu.Unlock()

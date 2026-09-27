@@ -3,6 +3,7 @@ package probe
 import (
     "time"
 
+    "github.com/wyw14/solo-037/internal/journal"
     "github.com/wyw14/solo-037/internal/model"
     "github.com/wyw14/solo-037/internal/tank"
 )
@@ -27,4 +28,22 @@ func SourceIDs(samples []model.Evidence) []string {
         }
     }
     return values
+}
+
+// PersistFrames appends wave frames to the journal in one batch and only
+// publishes them to the in-memory collection after the write is durable, so a
+// failed append can never leave frames looking recorded without an on-disk
+// trace.
+func PersistFrames(collection *Collection, store *journal.Store, frames []model.Evidence, at time.Time) error {
+    records, err := journal.EvidenceRecords(frames, at)
+    if err != nil {
+        return err
+    }
+    if err := store.AppendBatch(records); err != nil {
+        return err
+    }
+    for _, frame := range frames {
+        collection.Add(frame.WithDurability(true))
+    }
+    return nil
 }

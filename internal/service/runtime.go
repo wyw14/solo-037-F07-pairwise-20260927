@@ -15,6 +15,7 @@ type Runtime struct {
 	operations   map[model.RunID]model.Operation
 	incidents    []model.Incident
 	Measurements *MeasurementArchive
+	Laboratory   *Laboratory
 }
 
 func NewRuntime() *Runtime {
@@ -27,7 +28,16 @@ func OpenRuntime(directory string) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newRuntime(archive), nil
+	runtime := newRuntime(archive)
+	laboratory, err := NewLaboratory(directory)
+	if err != nil {
+		return nil, err
+	}
+	runtime.Laboratory = laboratory
+	// Run the commissioning scenario once against the real data directory so
+	// the audit view has expectations and durable records to reconcile.
+	_ = laboratory.Exercise(time.Unix(1700000000, 0))
+	return runtime, nil
 }
 
 func newRuntime(archive *MeasurementArchive) *Runtime {
@@ -89,5 +99,22 @@ func (r *Runtime) Health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (r *Runtime) Snapshot() map[string]any {
-	return map[string]any{"operations": r.Operations(), "equipment": r.Equipment(), "interlocks": r.Interlocks(), "incidents": r.Incidents(), "laboratory": BuildDiagnostics()}
+	return map[string]any{"operations": r.Operations(), "equipment": r.Equipment(), "interlocks": r.Interlocks(), "incidents": r.Incidents(), "laboratory": BuildDiagnostics(), "audit": r.AuditView()}
+}
+
+// AuditView lists, per run, which wave/force/brake/stage records were
+// expected, which frames are verifiable on disk, and which gaps or
+// file/memory disagreements leave a run unverified.
+func (r *Runtime) AuditView() map[string]any {
+	checked := time.Now().UTC()
+	journalView := EvidenceView{}
+	if r.Laboratory != nil {
+		journalView = BuildLaboratoryEvidenceView(r.Laboratory, r.Laboratory.Plans, checked)
+	}
+	archiveView := BuildArchiveEvidenceView(r.Measurements, checked)
+	return map[string]any{
+		"checked_at": checked,
+		"journal": journalView,
+		"operator_archive": archiveView,
+	}
 }

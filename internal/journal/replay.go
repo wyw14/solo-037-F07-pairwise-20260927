@@ -37,7 +37,7 @@ func Replay(records []Record, run model.RunID) ReplayState {
             if json.Unmarshal(record.Payload, &fence) == nil && fence > state.Fence {
                 state.Fence = fence
             }
-        case "wave_trace", "force_trace":
+        case "wave_trace", "force_trace", "brake_trace":
             state.Evidence++
         }
     }

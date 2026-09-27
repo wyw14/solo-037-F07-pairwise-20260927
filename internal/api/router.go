@@ -15,6 +15,11 @@ type Dependencies interface {
 	Interlocks() any
 	Incidents() any
 	MeasurementService
+	AuditService
+}
+
+type AuditService interface {
+	AuditView() map[string]any
 }
 
 type Router struct{ dependencies Dependencies }
@@ -28,6 +33,7 @@ func (r *Router) Handler() http.Handler {
 	router.Get("/api/equipment", r.equipment)
 	router.Get("/api/interlocks", r.interlocks)
 	router.Get("/api/incidents", r.incidents)
+	router.Get("/api/audit", r.audit)
 	router.Get("/api/measured-runs", r.measuredRuns)
 	router.Post("/api/measured-runs", r.createMeasuredRun)
 	router.Get("/api/measured-runs/{id}", r.measuredRun)
@@ -40,6 +46,7 @@ func (r *Router) Handler() http.Handler {
 	router.Get("/equipment", r.equipmentPage)
 	router.Get("/interlocks", r.interlocksPage)
 	router.Get("/incidents", r.incidentsPage)
+	router.Get("/audit", r.auditPage)
 	return router
 }
 
@@ -64,6 +71,9 @@ func (r *Router) interlocks(w http.ResponseWriter, _ *http.Request) {
 func (r *Router) incidents(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, r.dependencies.Incidents())
 }
+func (r *Router) audit(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, r.dependencies.AuditView())
+}
 func (r *Router) operationsPage(w http.ResponseWriter, request *http.Request) {
 	http.ServeFile(w, request, "web/operations.html")
 }
@@ -75,4 +85,7 @@ func (r *Router) interlocksPage(w http.ResponseWriter, request *http.Request) {
 }
 func (r *Router) incidentsPage(w http.ResponseWriter, request *http.Request) {
 	http.ServeFile(w, request, "web/incidents.html")
+}
+func (r *Router) auditPage(w http.ResponseWriter, request *http.Request) {
+	http.ServeFile(w, request, "web/audit.html")
 }

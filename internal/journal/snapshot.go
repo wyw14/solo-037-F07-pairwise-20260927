@@ -38,6 +38,9 @@ func (s *SnapshotStore) path() string {
     return filepath.Join(s.directory, "snapshot.json")
 }
 
+// Dir is the directory that holds the durable snapshot.json file.
+func (s *SnapshotStore) Dir() string { return s.directory }
+
 func (s *SnapshotStore) Build(records []Record, at time.Time) Snapshot {
     runs := make(map[model.RunID]struct{})
     for _, record := range records {

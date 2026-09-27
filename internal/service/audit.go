@@ -20,6 +20,7 @@ type AuditReport struct {
     CheckedAt time.Time `json:"checked_at"`
     Passed bool `json:"passed"`
     Checks []AuditCheck `json:"checks"`
+    EvidenceRun *RunEvidence `json:"evidence_run,omitempty"`
 }
 
 func AuditLaboratory(laboratory *Laboratory, run model.RunID, fence uint64, at time.Time) AuditReport {
@@ -31,16 +32,28 @@ func AuditLaboratory(laboratory *Laboratory, run model.RunID, fence uint64, at t
     report.Add("track_fence_retired", currentFence == 0, unsignedDetail(currentFence))
     occupancy := laboratory.Tank.Snapshot()
     report.Add("tank_section_released", len(occupancy) == 0, countDetail(len(occupancy)))
-    samples := laboratory.Probes.Samples(run)
-    report.Add("wave_samples_present", len(samples) > 0, countDetail(len(samples)))
-    report.Add("wave_revision_current", sameRevision(samples), revisionDetail(samples))
-    report.Add("wave_evidence_durable", durableEvidence(samples), durableDetail(samples))
-    forces := laboratory.Forces.Values(run)
-    report.Add("force_samples_present", len(forces) > 0, countDetail(len(forces)))
-    report.Add("force_evidence_durable", durableEvidence(forces), durableDetail(forces))
-    records := journal.RecordsForRun(laboratory.Store.Records(), run)
-    report.Add("journal_records_present", len(records) > 0, countDetail(len(records)))
-    recovery := journal.Recover(records, run)
+
+    // Evidence checks read the journal file through the ledger: anything the
+    // ledger cannot confirm from disk is reported missing or unverified, even
+    // when probes, force receiver or the emergency state remember it.
+    view := BuildLaboratoryEvidenceView(laboratory, laboratory.Plans, at)
+    ledger := ledgerForRun(view, run)
+    report.EvidenceRun = ledger
+    if ledger == nil {
+        report.Add("run_plan_registered", false, "no expectation registered for run")
+    } else {
+        report.Add("run_plan_registered", true, string(run))
+        for _, category := range ledger.Categories {
+            name := "evidence_" + category.Category + "_durable"
+            if category.Category == categoryStage {
+                name = "stage_records_durable"
+            }
+            passed := category.Status == EvidenceVerified
+            report.Add(name, passed, categoryLedgerDetail(category))
+        }
+    }
+
+    recovery := journal.Recover(laboratory.Store.Records(), run)
     report.Add("recovery_fence_nonnegative", recovery.Fence <= fence, unsignedDetail(recovery.Fence))
     emergencyResult, emergencyFound := laboratory.Emergency.Result(run)
     report.Add("emergency_result_present", emergencyFound, boolDetail(emergencyFound))
@@ -48,6 +61,26 @@ func AuditLaboratory(laboratory *Laboratory, run model.RunID, fence uint64, at t
     report.Add("interlocks_ready", laboratory.Interlocks.Ready(), boolDetail(laboratory.Interlocks.Ready()))
     report.Sort()
     return report
+}
+
+func ledgerForRun(view EvidenceView, run model.RunID) *RunEvidence {
+    for index := range view.Runs {
+        if view.Runs[index].Run == run {
+            return &view.Runs[index]
+        }
+    }
+    return nil
+}
+
+func categoryLedgerDetail(category CategoryLedger) string {
+    detail := countDetail(category.OnDisk) + "/" + countDetail(category.Expected) + " on disk"
+    if category.Detail != "" {
+        detail += "; " + category.Detail
+    }
+    if len(category.Gaps) > 0 {
+        detail += "; " + category.Gaps[0]
+    }
+    return detail
 }
 
 func (r *AuditReport) Add(name string, passed bool, detail string) {
@@ -77,52 +110,6 @@ func (r AuditReport) CheckMap() map[string]bool {
         result[check.Name] = check.Passed
     }
     return result
-}
-
-func sameRevision(evidence []model.Evidence) bool {
-    if len(evidence) == 0 {
-        return false
-    }
-    revision := evidence[0].Revision
-    for _, item := range evidence[1:] {
-        if item.Revision != revision {
-            return false
-        }
-    }
-    return true
-}
-
-func durableEvidence(evidence []model.Evidence) bool {
-    if len(evidence) == 0 {
-        return false
-    }
-    for _, item := range evidence {
-        if !item.Durable {
-            return false
-        }
-    }
-    return true
-}
-
-func revisionDetail(evidence []model.Evidence) string {
-    if len(evidence) == 0 {
-        return "none"
-    }
-    revisions := make(map[model.RevisionID]struct{})
-    for _, item := range evidence {
-        revisions[item.Revision] = struct{}{}
-    }
-    return countDetail(len(revisions))
-}
-
-func durableDetail(evidence []model.Evidence) string {
-    count := 0
-    for _, item := range evidence {
-        if item.Durable {
-            count++
-        }
-    }
-    return countDetail(count) + "/" + countDetail(len(evidence))
 }
 
 func countDetail(value int) string {
